@@ -1,0 +1,19 @@
+# Ambientes Virtuais
+venv/
+env/
+.env
+
+# Arquivos locais do Python
+__pycache__/
+*.pyc
+
+# Relatórios e chaves sensíveis
+Relatórios/
+*.pdf
+*.csv
+*.xlsx
+credentials.json
+secrets.toml
+
+# Configurações do VS Code
+.vscode/

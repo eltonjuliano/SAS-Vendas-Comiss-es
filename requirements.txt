@@ -1,0 +1,10 @@
+streamlit
+pandas
+pdfplumber
+scikit-learn
+plotly
+pytest
+gspread
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
