@@ -1,143 +1,151 @@
-import gspread
-import os
-import json
 import streamlit as st
-from google.oauth2.service_account import Credentials
-
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
-
-# Configure the name of your spreadsheet here:
-SPREADSHEET_NAME = "BD_SAS_VENDAS"
-
-def get_google_client():
-    """Authenticate and return the gspread client."""
-    # Try to get credentials from Streamlit Secrets safely (for production)
-    try:
-        if "gcp_service_account" in st.secrets:
-            credentials = Credentials.from_service_account_info(
-                st.secrets["gcp_service_account"], scopes=SCOPES
-            )
-            return gspread.authorize(credentials)
-    except Exception:
-        pass # Ignora erro e tenta o arquivo local abaixo
-
-    # Local approach
-    file_path = "credentials.json"
-    if not os.path.exists(file_path):
-        st.error("⚠️ Arquivo credentials.json não encontrado. Certifique-se de que ele está na mesma pasta do painel.")
-        return None
-        
-    credentials = Credentials.from_service_account_file(file_path, scopes=SCOPES)
-    client = gspread.authorize(credentials)
-    return client
-
-def get_or_create_worksheet():
-    """Finds the spreadsheet and returns the first sheet. Creates headers if empty."""
-    client = get_google_client()
-    if not client: return None
-    
-    try:
-        sheet = client.open(SPREADSHEET_NAME)
-        worksheet = sheet.get_worksheet(0)
-    except gspread.exceptions.SpreadsheetNotFound:
-        st.error(f"⚠️ Planilha '{SPREADSHEET_NAME}' não encontrada. Verifique se você compartilhou com o e-mail do robô.")
-        return None
-        
-    # Check if empty or malformed to inject headers
-    data = worksheet.get_all_values()
-    headers = [
-        "os_number", "date", "entrada_time", "autorizacao_time", 
-        "fechamento_time", "saida_time", "customer", "email", 
-        "vehicle", "vehicle_model", "vehicle_year", "plate", 
-        "contact", "total_parts", "total_services", "total_tires", "tire_quantity",
-        "total_michelin", "michelin_quantity"
-    ]
-    
-    if not data or len(data[0]) < 2 or "date" not in data[0]:
-        # Clear sheet and inject standard headers mirroring pdf_parser logic
-        worksheet.clear()
-        worksheet.insert_row(headers, 1)
-        
-    return worksheet
+from services.supabase_client import supabase
+from services.auth import get_current_user
 
 def load_all_sales():
-    """Loads all records from Google Sheets natively as a list of dicts."""
-    ws = get_or_create_worksheet()
-    if not ws: return []
+    """Carrega as OSs do usuário logado via Supabase."""
+    user = get_current_user()
+    if not user: return []
     
-    records = ws.get_all_records(numericise_ignore=["os_number", "contact", "plate", "vehicle_year", "entrada_time", "saida_time", "autorizacao_time", "fechamento_time"])
-    
-    # Failsafe in case records returned is weird or empty after clearing
-    if not records:
-        return []
+    try:
+        # RLS will automatically filter if using anon key, but we pass user_id anyway if using service key.
+        # Actually with anon key we just select all, RLS does the magic.
+        response = supabase.table("os_records").select("*").eq("user_id", user.id).execute()
         
-    # Cast float values
-    for r in records:
-        for key in ["total_parts", "total_services", "total_tires", "tire_quantity", "total_michelin", "michelin_quantity"]:
-            val = r.get(key)
-            if val == "" or val is None:
-                r[key] = 0.0
-            elif isinstance(val, (int, float)):
-                # Se já for tipo numérico, apenas converte
-                r[key] = float(val) if "quantity" not in key else int(val)
-            else:
-                # Se for string
-                try:
-                    val_str = str(val).replace("R$", "").replace(" ", "")
-                    # Só remove ponto milhar se for padrão BR (com vírgula)
-                    if "," in val_str:
-                        val_str = val_str.replace(".", "").replace(",", ".")
-                    r[key] = float(val_str) if "quantity" not in key else int(float(val_str))
-                except:
-                    r[key] = 0.0
+        # O supabase-py retorna response.data como uma lista de dicts.
+        records = response.data
+        
+        # Ajustes de tipos para bater com o formato original do app.py
+        for r in records:
+            for key in ["total_parts", "total_services", "total_tires", "tire_quantity", "total_michelin", "michelin_quantity"]:
+                if r.get(key) is None:
+                    r[key] = 0.0 if "quantity" not in key else 0
+                else:
+                    r[key] = float(r[key]) if "quantity" not in key else int(float(r[key]))
                     
-    return records
+        return records
+    except Exception as e:
+        st.error(f"Erro ao carregar dados: {e}")
+        return []
 
 def save_new_sales(parsed_data_list):
     """
-    Receives a list of parsed dictionaries from PDF.
-    Inserts ONLY the ones that are not already present in the database.
-    Returns the number of rows inserted.
+    Salva uma lista de dicionários de OS no Supabase.
+    Retorna (inserted_count, list_of_duplicates).
     """
-    if not parsed_data_list: return 0
-    
-    ws = get_or_create_worksheet()
-    if not ws: return 0
+    user = get_current_user()
+    if not user or not parsed_data_list: return 0, []
     
     try:
-        existing_records = ws.get_all_records()
-        existing_os = set(str(row.get("os_number")) for row in existing_records)
-    except:
+        # Busca OS existentes do usuário para evitar duplicidade
+        existing_response = supabase.table("os_records").select("os_number").eq("user_id", user.id).execute()
+        existing_os = set(str(row["os_number"]) for row in existing_response.data)
+    except Exception:
         existing_os = set()
         
     rows_to_insert = []
-    keys = [
-        "os_number", "date", "entrada_time", "autorizacao_time", 
-        "fechamento_time", "saida_time", "customer", "email", 
-        "vehicle", "vehicle_model", "vehicle_year", "plate", 
-        "contact", "total_parts", "total_services", "total_tires", "tire_quantity",
-        "total_michelin", "michelin_quantity"
-    ]
+    duplicates = []
     
     for item in parsed_data_list:
         os_num = str(item.get('os_number'))
         if os_num not in existing_os and os_num.strip() != "":
-            # Prepare row matching keys order
-            row = []
-            for k in keys:
-                val = item.get(k, "")
-                # Type safe for google sheets avoiding dates crashes
-                if val is None: val = ""
-                else: val = str(val)
-                row.append(val)
-            rows_to_insert.append(row)
-            existing_os.add(os_num) # Previne duplicata no mesmo lote
+            # Prepara o registro
+            row = item.copy()
+            row["user_id"] = user.id
             
+            # Limpeza rápida
+            if 'date' in row and row['date']:
+                row['date'] = str(row['date'])
+            else:
+                row['date'] = None
+                
+            rows_to_insert.append(row)
+            existing_os.add(os_num)
+        elif os_num in existing_os and os_num.strip() != "":
+            if os_num not in duplicates:
+                duplicates.append(os_num)
+                
     if rows_to_insert:
-        # Append rows in batch
-        ws.append_rows(rows_to_insert, value_input_option='USER_ENTERED')
-        
-    return len(rows_to_insert)
+        try:
+            supabase.table("os_records").insert(rows_to_insert).execute()
+        except Exception as e:
+            st.error(f"Erro ao salvar OS: {e}")
+            return 0, duplicates
+            
+    return len(rows_to_insert), duplicates
+
+def delete_os(os_number):
+    """Deleta uma OS do Supabase baseada no número."""
+    user = get_current_user()
+    if not user: return False
+    
+    try:
+        response = supabase.table("os_records").delete().eq("os_number", str(os_number)).eq("user_id", user.id).execute()
+        # No supabase-py v2, delete retorna os registros deletados em response.data
+        if response.data:
+            return True
+        return False
+    except Exception as e:
+        st.error(f"Erro ao remover a OS: {e}")
+        return False
+
+# ======================== FINANCIAL MANAGEMENT ========================
+
+def load_finance_records():
+    """Retorna os lançamentos financeiros do usuário."""
+    user = get_current_user()
+    if not user: return []
+    
+    try:
+        response = supabase.table("finance_records").select("*").eq("user_id", user.id).execute()
+        records = response.data
+        for r in records:
+            r["valor"] = float(r.get("valor", 0.0))
+        return records
+    except Exception as e:
+        st.error(f"Erro ao carregar fluxo financeiro: {e}")
+        return []
+
+def save_finance_record(record_dict):
+    """Insere um novo registro financeiro no Supabase."""
+    user = get_current_user()
+    if not user: return False
+    
+    record_dict["user_id"] = user.id
+    try:
+        supabase.table("finance_records").insert(record_dict).execute()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar finança: {e}")
+        return False
+
+def delete_finance_record(record_id):
+    """Deleta um registro financeiro com base no ID."""
+    user = get_current_user()
+    if not user: return False
+    
+    try:
+        response = supabase.table("finance_records").delete().eq("id", str(record_id)).eq("user_id", user.id).execute()
+        if response.data:
+            return True
+        return False
+    except Exception:
+        return False
+
+def update_finance_record(record_dict):
+    """Atualiza um registro financeiro."""
+    user = get_current_user()
+    if not user: return False
+    
+    record_id = str(record_dict.get("id"))
+    update_data = record_dict.copy()
+    update_data.pop("id", None) # Não atualizamos o ID
+    
+    try:
+        response = supabase.table("finance_records").update(update_data).eq("id", record_id).eq("user_id", user.id).execute()
+        if response.data:
+            return True
+        return False
+    except Exception as e:
+        st.error(f"Erro na atualização: {e}")
+        return False
