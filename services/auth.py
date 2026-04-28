@@ -71,3 +71,29 @@ def get_current_user():
         pass
         
     return None
+
+def get_user_profile(user_id):
+    """Retorna os dados do perfil público, incluindo o ciclo de faturamento."""
+    try:
+        response = supabase.table("profiles").select("*").eq("id", user_id).execute()
+        if response.data:
+            return response.data[0]
+        return {}
+    except Exception as e:
+        print(f"Erro ao buscar perfil: {e}")
+        return {}
+
+def update_cycle_days(start_day, end_day):
+    """Atualiza os dias de início e fim do ciclo de comissão do usuário."""
+    user = get_current_user()
+    if not user: return False
+    
+    try:
+        supabase.table("profiles").update({
+            "cycle_start_day": start_day,
+            "cycle_end_day": end_day
+        }).eq("id", user.id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao atualizar ciclo: {e}")
+        return False

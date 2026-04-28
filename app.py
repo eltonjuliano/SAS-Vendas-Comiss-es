@@ -4,7 +4,7 @@ from datetime import datetime
 from parser.pdf_parser import extract_pdf_data
 from services.commission import process_sales_dataframe
 from services.database import load_all_sales, save_new_sales, delete_os, load_finance_records, save_finance_record, delete_finance_record, update_finance_record
-from services.auth import sign_up, sign_in, sign_out, get_current_user, update_profile_name
+from services.auth import sign_up, sign_in, sign_out, get_current_user, update_profile_name, get_user_profile, update_cycle_days
 from services.admin_db import is_admin, get_all_clients, update_subscription_status, create_support_ticket, get_my_tickets, get_all_tickets, answer_ticket, get_global_revenue, request_cancellation, reactivate_account, get_my_subscription
 import uuid
 from services.forecast import generate_forecast
@@ -19,67 +19,137 @@ from utils.helpers import (
 
 # Configuration
 st.set_page_config(
-    page_title="Dashboard Automotivo",
-    page_icon="🚗",
+    page_title="Comifyx",
+    page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for dark theme adjustments and sleek fonts
+# Custom CSS for light theme, sleek fonts, and Mordomize-inspired UI
 st.markdown("""
 <style>
     /* Global size adjustments for better visualization */
     html, body, [class*="css"]  {
         font-size: 16px !important;
+        font-family: 'Inter', sans-serif !important;
     }
     h1 {
         font-size: 32px !important;
+        font-weight: 700 !important;
+        color: #1E2124 !important;
     }
     h2, h3 {
         font-size: 24px !important;
+        font-weight: 600 !important;
+        color: #2D3748 !important;
     }
     .metric-card {
-        background-color: #1E1E1E;
-        border-radius: 8px;
-        padding: 15px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        background-color: #FFFFFF;
+        border-radius: 12px;
+        padding: 20px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        border: 1px solid #E2E8F0;
     }
     .metric-value {
-        font-size: 24px;
-        font-weight: bold;
-        color: #4CAF50;
+        font-size: 28px;
+        font-weight: 800;
+        color: #1E2124;
     }
     a.wa-btn {
         background-color: #25D366; 
         color: white; 
-        padding: 6px 12px; 
+        padding: 8px 16px; 
         text-align: center; 
         text-decoration: none; 
         display: inline-block; 
-        border-radius: 4px;
-        font-weight: bold;
+        border-radius: 6px;
+        font-weight: 600;
         font-size: 14px;
+        transition: background-color 0.2s;
+    }
+    a.wa-btn:hover {
+        background-color: #1EBE55;
     }
     .crm-table {
         width: 100%;
-        border-collapse: collapse;
+        border-collapse: separate;
+        border-spacing: 0;
         font-size: 15px;
-        font-family: Arial, sans-serif;
-        background-color: #1e1e1e;
-        color: #e0e0e0;
+        font-family: 'Inter', sans-serif;
+        background-color: #FFFFFF;
+        color: #4A5568;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        border: 1px solid #E2E8F0;
     }
     .crm-table thead {
-        background-color: #2b2b2b;
-        color: white;
+        background-color: #F8FAFC;
+        color: #1A202C;
+        font-weight: 600;
     }
     .crm-table th, .crm-table td {
-        padding: 12px 14px;
+        padding: 14px 16px;
         text-align: left;
-        border-bottom: 1px solid #333;
+        border-bottom: 1px solid #E2E8F0;
     }
     .crm-table tbody tr:hover {
-        background-color: #2a2a2a;
+        background-color: #F8FAFC;
     }
+    /* Buttons */
+    .stButton>button {
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        padding: 0.5rem 1rem !important;
+    }
+
+    /* Ocultar elementos nativos do Streamlit que parecem "sistema em teste" */
+    [data-testid="stHeader"] {
+        display: none !important;
+    }
+    .block-container {
+        padding-top: 2rem !important;
+        padding-bottom: 2rem !important;
+        max-width: 1200px !important;
+    }
+
+    /* Ajustes da Sidebar */
+    [data-testid="stSidebar"] {
+        background-color: #F8FAFC !important;
+        border-right: 1px solid #E2E8F0 !important;
+    }
+    
+    /* Transformar Radio Buttons da Sidebar em Menu Moderno */
+    [data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child {
+        display: none !important; /* Esconde a bolinha do radio */
+    }
+    [data-testid="stSidebar"] div[role="radiogroup"] > label {
+        padding: 12px 16px !important;
+        margin-bottom: 4px !important;
+        border-radius: 8px !important;
+        border-left: 4px solid transparent !important;
+        transition: all 0.2s ease-in-out !important;
+        cursor: pointer !important;
+    }
+    [data-testid="stSidebar"] div[role="radiogroup"] > label:hover {
+        background-color: rgba(242, 92, 39, 0.05) !important;
+    }
+    [data-testid="stSidebar"] div[role="radiogroup"] p {
+        font-size: 1.05rem !important;
+        font-weight: 500 !important;
+        color: #4A5568 !important;
+    }
+    
+    /* Efeito de item Selecionado usando CSS :has() */
+    [data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) {
+        background-color: rgba(242, 92, 39, 0.1) !important;
+        border-left: 4px solid #F25C27 !important;
+    }
+    [data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) p {
+        color: #F25C27 !important;
+        font-weight: 700 !important;
+    }
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -183,7 +253,7 @@ def edit_finance_modal(record_id, df_fin):
                 st.rerun()
 
 def render_dashboard():
-    st.title("🚗 Dashboard Financeiro e Comissões")
+    st.title("📈 Comifyx - Vendas e Comissões")
     
     # ------------------------- SIDEBAR & LOGOUT -------------------------
     user = get_current_user()
@@ -209,38 +279,15 @@ def render_dashboard():
             st.rerun()
         return
 
-    # ------------------------- SIDEBAR & DATABASE CARGA -------------------------
-    st.sidebar.header("📁 Inserir Novos Relatórios")
+    # Sidebar Menu Navigation
+    menu_options = ["⏱️ Dashboard", "👥 Clientes (CRM)", "🏎️ Pneus (Michelin)", "💰 Receitas e Despesas", "📁 Importar Vendas (PDF)", "📞 Suporte", "⚙️ Minha Conta"]
     
-    with st.sidebar.expander("Cadastrar PDFs", expanded=False):
-        uploaded_files = st.file_uploader(
-            "Faça upload dos PDFs (Ordem de Serviço)", 
-            type="pdf", 
-            accept_multiple_files=True
-        )
-        if st.button("Processar Ordens de Serviço", type="primary", use_container_width=True) and uploaded_files:
-            with st.spinner("Lendo PDFs e calculando comissões..."):
-                raw_data_list = []
-                for file_obj in uploaded_files:
-                    try:
-                        data = extract_pdf_data(file_obj)
-                        raw_data_list.append(data)
-                    except Exception as e:
-                        st.error(f"Erro ao processar {file_obj.name}: {e}")
-                
-                # Save to database
-                inserted, duplicates = save_new_sales(raw_data_list)
-                if inserted > 0:
-                    st.session_state['upload_success'] = inserted
-                
-                if duplicates:
-                    st.session_state['upload_duplicates'] = duplicates
-                elif inserted == 0 and not duplicates:
-                    st.session_state['upload_empty'] = True
-                
-                # Refresh to fetch from db
-                st.rerun()
-                
+    _is_adm = is_admin()
+    if _is_adm:
+        menu_options.append("⚙️ Painel de Controle SaaS")
+        
+    selected_tab = st.sidebar.radio("", menu_options, label_visibility="collapsed")
+    
     # Mensagens de alerta persistentes pós-reload
     if 'upload_success' in st.session_state:
         st.sidebar.success(f"✅ {st.session_state.pop('upload_success')} novas OS cadastradas com sucesso!")
@@ -255,16 +302,9 @@ def render_dashboard():
     with st.spinner("Conectando ao Banco de Dados (Supabase)..."):
         db_raw_data = load_all_sales()
         
-    if not db_raw_data:
-        st.info("👈 Banco de dados vazio. Abra a guia lateral 'Cadastrar PDFs' e faça o upload das Ordens de Serviço para iniciar.")
-        return
-
-    # Calculate commissions and prepare dataframe from database records
-    df = process_sales_dataframe(db_raw_data)
-        
-    if df.empty:
-        st.warning("Nenhum dado válido para exibição.")
-        return
+    df = pd.DataFrame()
+    if db_raw_data:
+        df = process_sales_dataframe(db_raw_data)
 
     # Trigger Dialogs based on action
     action_param = st.query_params.get("action")
@@ -290,27 +330,74 @@ def render_dashboard():
 
     # Sidebar Filters
     st.sidebar.markdown("---")
-    st.sidebar.header("🧭 Menu de Navegação")
-    menu_options = ["📊 Visão Geral Administrativa", "👥 Área de Clientes (CRM)", "🛞 Bônus Michelin", "💰 Gestão de Recebíveis", "📞 Suporte ao Cliente", "⚙️ Minha Conta"]
+    st.sidebar.markdown("**Filtros**")
     
-    _is_adm = is_admin()
-    if _is_adm:
-        menu_options.append("⚙️ Painel de Controle SaaS")
-        
-    selected_tab = st.sidebar.radio("Selecione a área", menu_options)
-    
-    st.sidebar.markdown("---")
-    st.sidebar.header("🔍 Filtros")
-    df = df.dropna(subset=['date']) # Ensure we only filter valid dates
-    min_date = df['date'].min()
-    max_date = df['date'].max()
+    if not df.empty:
+        df = df.dropna(subset=['date']) # Ensure we only filter valid dates
+    min_date = df['date'].min().date() if not df.empty else datetime.now().date()
+    max_date = df['date'].max().date() if not df.empty else datetime.now().date()
 
-    date_range = st.sidebar.date_input(
-        "Período de Venda",
-        value=(min_date, max_date),
-        min_value=min_date,
-        max_value=max_date
-    )
+    # Puxar dados do ciclo
+    user_profile = get_user_profile(user.id)
+    cycle_start = int(user_profile.get("cycle_start_day", 1)) if user_profile else 1
+    cycle_end = int(user_profile.get("cycle_end_day", 31)) if user_profile else 31
+
+    from dateutil.relativedelta import relativedelta
+    import calendar
+    hoje = datetime.now().date()
+    
+    def get_cycle_dates(reference_date, start_day, end_day):
+        try:
+            start_date = reference_date.replace(day=start_day)
+        except ValueError:
+            last_day = calendar.monthrange(reference_date.year, reference_date.month)[1]
+            start_date = reference_date.replace(day=min(start_day, last_day))
+            
+        if reference_date < start_date and start_day >= end_day:
+            start_date = start_date - relativedelta(months=1)
+            last_day_prev = calendar.monthrange(start_date.year, start_date.month)[1]
+            start_date = start_date.replace(day=min(start_day, last_day_prev))
+            
+        if start_day < end_day:
+            last_day_curr = calendar.monthrange(start_date.year, start_date.month)[1]
+            end_date = start_date.replace(day=min(end_day, last_day_curr))
+        else:
+            end_date_raw = start_date + relativedelta(months=1)
+            last_day_next = calendar.monthrange(end_date_raw.year, end_date_raw.month)[1]
+            end_date = end_date_raw.replace(day=min(end_day, last_day_next))
+            
+        return start_date, end_date
+
+    c_atual_start, c_atual_end = get_cycle_dates(hoje, cycle_start, cycle_end)
+    c_ant_start, c_ant_end = get_cycle_dates(hoje - relativedelta(months=1), cycle_start, cycle_end)
+    c_ret_start, c_ret_end = get_cycle_dates(hoje - relativedelta(months=2), cycle_start, cycle_end)
+    
+    periodo_opcao = st.sidebar.selectbox("Período de Referência", [
+        "Ciclo Atual",
+        "Ciclo Anterior",
+        "Ciclo Retrasado",
+        "Personalizado"
+    ])
+    
+    if periodo_opcao == "Ciclo Atual":
+        default_dates = (c_atual_start, c_atual_end)
+    elif periodo_opcao == "Ciclo Anterior":
+        default_dates = (c_ant_start, c_ant_end)
+    elif periodo_opcao == "Ciclo Retrasado":
+        default_dates = (c_ret_start, c_ret_end)
+    else:
+        default_dates = (min_date, max_date)
+
+    if periodo_opcao != "Personalizado":
+        date_range = default_dates
+        st.sidebar.info(f"Mostrando de {default_dates[0].strftime('%d/%m/%Y')} a {default_dates[1].strftime('%d/%m/%Y')}")
+    else:
+        date_range = st.sidebar.date_input(
+            "Selecione as Datas",
+            value=default_dates,
+            min_value=min(min_date, c_ret_start),
+            max_value=max(max_date, c_atual_end)
+        )
     
     # Filter DataFrame
     filtered_df = df.copy()
@@ -323,84 +410,98 @@ def render_dashboard():
             (filtered_df['date'] <= end_date)
         ]
 
-    if filtered_df.empty:
-        st.warning("Nenhum dado encontrado para os filtros selecionados.")
-        return
+    if filtered_df.empty and selected_tab in ["⏱️ Dashboard", "👥 Clientes (CRM)", "🏎️ Pneus (Michelin)", "💰 Receitas e Despesas"]:
+        st.warning("Nenhum dado de vendas encontrado para os filtros selecionados.")
+        # Não damos return aqui para permitir o acesso a Minha Conta e Suporte.
         
-
     # ========================= VISÃO GERAL =========================
-    if selected_tab == "📊 Visão Geral Administrativa":
-        # KPI SECTION
-        total_sales = filtered_df['total_revenue'].sum()
-        total_tires = filtered_df['total_tires'].sum()
-        total_services_parts = filtered_df['total_revenue'].sum() - total_tires
-        total_commission = filtered_df['total_commission'].sum()
-
-        st.subheader("📊 Indicadores Principais")
-        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-
-        with kpi1:
-            st.metric(label="Faturamento Total", value=format_currency(total_sales))
-        with kpi2:
-            st.metric(label="Total Peças/Serviços", value=format_currency(total_services_parts))
-        with kpi3:
-            st.metric(label="Total Pneus", value=format_currency(total_tires))
-        with kpi4:
-            st.metric(label="Comissão Total Estimada", value=format_currency(total_commission))
-
-        st.markdown("---")
-
-        # CHARTS SECTION
-        st.subheader("📈 Análise Gráfica e Operacional")
-        
-        # Row 1: Sales / Commissions
-        daily_sales = filtered_df.groupby('date').agg(
-            total_revenue=('total_revenue', 'sum'),
-            total_commission=('total_commission', 'sum')
-        ).reset_index()
-
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            tb1, tb2 = st.tabs(["Evolução Faturamento", "Evolução Comissões"])
-            with tb1:
-                st.plotly_chart(plot_sales_evolution(daily_sales), use_container_width=True)
-            with tb2:
-                st.plotly_chart(plot_commissions_evolution(daily_sales), use_container_width=True)
-        with c2:
-            st.plotly_chart(plot_category_comparison(total_tires, total_services_parts), use_container_width=True)
+    if selected_tab == "⏱️ Dashboard":
+        if not filtered_df.empty:
+            # KPI SECTION
+            total_sales = filtered_df['total_revenue'].sum()
+            total_tires = filtered_df['total_tires'].sum()
+            total_services_parts = filtered_df['total_revenue'].sum() - total_tires
+            total_commission = filtered_df['total_commission'].sum()
+    
+            st.subheader("Visão Geral das Vendas")
             
-        # Row 2: Flow and Vehicles
-        c3, c4 = st.columns(2)
-        with c3:
-            st.plotly_chart(plot_time_analysis(filtered_df), use_container_width=True)
-        with c4:
-            st.plotly_chart(plot_vehicle_frequency(filtered_df), use_container_width=True)
-
-        st.markdown("---")
-
-        # FORECAST SECTION
-        st.subheader("🔮 Previsão de Fechamento de Mês")
-        forecast_result = generate_forecast(df) 
-        
-        if forecast_result:
-            fc1, fc2, fc3 = st.columns(3)
-            month_label = forecast_result['month']
+            st.markdown(f"""
+            <div style="display: flex; gap: 15px; margin-bottom: 25px; flex-wrap: wrap;">
+                <div class="metric-card" style="flex: 1; min-width: 200px;">
+                    <div style="color: #718096; font-size: 0.9rem; margin-bottom: 5px;">Faturamento Total</div>
+                    <div class="metric-value">{format_currency(total_sales)}</div>
+                    <div style="background-color: #E6FFFA; color: #38A169; display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: bold; margin-top: 8px;">↑ Faturamento</div>
+                </div>
+                <div class="metric-card" style="flex: 1; min-width: 200px;">
+                    <div style="color: #718096; font-size: 0.9rem; margin-bottom: 5px;">Peças e Serviços</div>
+                    <div class="metric-value">{format_currency(total_services_parts)}</div>
+                </div>
+                <div class="metric-card" style="flex: 1; min-width: 200px;">
+                    <div style="color: #718096; font-size: 0.9rem; margin-bottom: 5px;">Vendas de Pneus</div>
+                    <div class="metric-value">{format_currency(total_tires)}</div>
+                </div>
+                <div class="metric-card" style="flex: 1; min-width: 200px; border-left: 4px solid #F25C27;">
+                    <div style="color: #718096; font-size: 0.9rem; margin-bottom: 5px; font-weight: 600;">Sua Comissão</div>
+                    <div class="metric-value" style="color: #F25C27;">{format_currency(total_commission)}</div>
+                    <div style="background-color: #FFF3EB; color: #DD6B20; display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: bold; margin-top: 8px;">★ A Receber</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+    
+            # CHARTS SECTION
+            st.subheader("📈 Análise Gráfica e Operacional")
             
-            with fc1:
-                st.info(f"**Referência:** Mês {month_label}")
-                st.write("Baseado no ritmo de vendas atual utilizando Regressão Linear.")
-            with fc2:
-                st.metric(
-                    label="Projeção Faturamento", 
-                    value=format_currency(forecast_result['projected_revenue']), 
-                    delta=format_currency(forecast_result['projected_revenue'] - forecast_result['current_revenue'])
-                )
-            with fc3:
-                st.metric(
-                    label="Projeção Comissão", 
-                    value=format_currency(forecast_result['projected_commission']),
-                    delta=format_currency(forecast_result['projected_commission'] - forecast_result['current_commission'])
-                )
+            # Row 1: Sales / Commissions
+            daily_sales = filtered_df.groupby('date').agg(
+                total_revenue=('total_revenue', 'sum'),
+                total_commission=('total_commission', 'sum')
+            ).reset_index()
+    
+            c1, c2 = st.columns([2, 1])
+            with c1:
+                tb1, tb2 = st.tabs(["Evolução Faturamento", "Evolução Comissões"])
+                with tb1:
+                    st.plotly_chart(plot_sales_evolution(daily_sales), use_container_width=True)
+                with tb2:
+                    st.plotly_chart(plot_commissions_evolution(daily_sales), use_container_width=True)
+            with c2:
+                st.plotly_chart(plot_category_comparison(total_tires, total_services_parts), use_container_width=True)
+                
+            # Row 2: Flow and Vehicles
+            c3, c4 = st.columns(2)
+            with c3:
+                st.plotly_chart(plot_time_analysis(filtered_df), use_container_width=True)
+            with c4:
+                st.plotly_chart(plot_vehicle_frequency(filtered_df), use_container_width=True)
+    
+            st.markdown("---")
+    
+            # FORECAST SECTION
+            st.subheader("🔮 Previsão de Fechamento de Mês")
+            if 'start_date' in locals() and 'end_date' in locals():
+                forecast_result = generate_forecast(filtered_df, start_date, end_date) 
+            else:
+                forecast_result = None
+            
+            if forecast_result:
+                fc1, fc2, fc3 = st.columns(3)
+                month_label = forecast_result['month']
+                
+                with fc1:
+                    st.info(f"**Referência:** Mês {month_label}")
+                    st.write("Baseado no ritmo de vendas atual utilizando Regressão Linear.")
+                with fc2:
+                    st.metric(
+                        label="Projeção Faturamento", 
+                        value=format_currency(forecast_result['projected_revenue']), 
+                        delta=format_currency(forecast_result['projected_revenue'] - forecast_result['current_revenue'])
+                    )
+                with fc3:
+                    st.metric(
+                        label="Projeção Comissões", 
+                        value=format_currency(forecast_result['projected_commission']), 
+                        delta=format_currency(forecast_result['projected_commission'] - forecast_result['current_commission'])
+                    )
         else:
             st.write("Volume de dados insuficiente para gerar previsão (mínimo de 2 dias no mês atual).")
 
@@ -447,8 +548,8 @@ def render_dashboard():
         st.write(html_table, unsafe_allow_html=True)
 
 
-    # ========================= ÁREA DE CLIENTES =========================
-    elif selected_tab == "👥 Área de Clientes (CRM)":
+    # ========================= CRM DE CLIENTES =========================
+    elif selected_tab == "👥 Clientes (CRM)":
         st.subheader("🔐 Acesso Restrito: Banco de Clientes")
         
         if "crm_authed" not in st.session_state:
@@ -542,7 +643,7 @@ def render_dashboard():
             st.write(html_table, unsafe_allow_html=True)
             
     # ========================= BÔNUS MICHELIN =========================
-    elif selected_tab == "🛞 Bônus Michelin":
+    elif selected_tab == "🏎️ Pneus (Michelin)":
         st.subheader("🛞 Relatório de Vendas: MICHELIN")
         st.write("Acompanhe o faturamento exclusivo de pneus da marca Michelin para repasses de bônus.")
         
@@ -584,8 +685,8 @@ def render_dashboard():
             st.info("Atualize o banco de dados enviando novos relatórios para visualizar os dados Michelin.")
             
 
-    # ========================= GESTÃO DE RECEBÍVEIS =========================
-    elif selected_tab == "💰 Gestão de Recebíveis":
+    # ========================= GESTÃO DE RECEBÍVEIS E DESPESAS =========================
+    elif selected_tab == "💰 Receitas e Despesas":
         st.subheader("💰 Gestão de Recebíveis e Gastos")
         st.write("Controle seu fluxo de caixa pessoal: adicione seus recebimentos extras, salários e suas despesas diárias.")
         
@@ -706,8 +807,41 @@ def render_dashboard():
             st.info("Você ainda não possui lançamentos financeiros.")
             st.write(f"Sua previsão com base apenas em Vendas de OS nesse período: **{format_currency(total_commission)}**")
 
+    # ========================= IMPORTAR VENDAS (PDF) =========================
+    elif selected_tab == "📁 Importar Vendas (PDF)":
+        st.subheader("📁 Importar Vendas (PDF)")
+        st.write("Faça upload dos PDFs gerados pelo seu sistema para importar novas vendas e ordens de serviço.")
+        
+        uploaded_files = st.file_uploader(
+            "Selecione um ou mais PDFs", 
+            type="pdf", 
+            accept_multiple_files=True
+        )
+        if st.button("Processar Ordens de Serviço", type="primary", use_container_width=True) and uploaded_files:
+            with st.spinner("Lendo PDFs e calculando comissões..."):
+                raw_data_list = []
+                for file_obj in uploaded_files:
+                    try:
+                        data = extract_pdf_data(file_obj)
+                        raw_data_list.append(data)
+                    except Exception as e:
+                        st.error(f"Erro ao processar {file_obj.name}: {e}")
+                
+                # Save to database
+                inserted, duplicates = save_new_sales(raw_data_list)
+                if inserted > 0:
+                    st.session_state['upload_success'] = inserted
+                
+                if duplicates:
+                    st.session_state['upload_duplicates'] = duplicates
+                elif inserted == 0 and not duplicates:
+                    st.session_state['upload_empty'] = True
+                
+                # Refresh to fetch from db
+                st.rerun()
+
     # ========================= SUPORTE (CLIENTE) =========================
-    elif selected_tab == "📞 Suporte ao Cliente":
+    elif selected_tab == "📞 Suporte":
         st.subheader("📞 Central de Ajuda e Suporte")
         st.write("Teve algum problema ou tem uma dúvida? Abra um chamado abaixo e nossa equipe responderá em breve.")
         
@@ -745,12 +879,30 @@ def render_dashboard():
         
         with st.expander("👤 Alterar Nome do Perfil", expanded=True):
             user_nome_atual = user.user_metadata.get('display_name', '')
-            novo_nome = st.text_input("Nome da Oficina / Seu Nome", value=user_nome_atual)
+            novo_nome = st.text_input("Seu Nome Completo", value=user_nome_atual)
             if st.button("Salvar Alterações"):
                 if update_profile_name(novo_nome):
                     st.success("Nome atualizado com sucesso!")
                     st.rerun()
                     
+        st.markdown("---")
+        with st.expander("🔄 Configurar Ciclo de Faturamento", expanded=True):
+            st.write("Defina o período padrão para o cálculo das suas comissões e faturamento.")
+            user_profile = get_user_profile(user.id)
+            current_start = user_profile.get("cycle_start_day", 1) if user_profile else 1
+            current_end = user_profile.get("cycle_end_day", 31) if user_profile else 31
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                new_start = st.number_input("Dia de Início", min_value=1, max_value=31, value=int(current_start))
+            with c2:
+                new_end = st.number_input("Dia de Fechamento", min_value=1, max_value=31, value=int(current_end))
+                
+            if st.button("Salvar Ciclo"):
+                if update_cycle_days(new_start, new_end):
+                    st.success("Ciclo atualizado com sucesso!")
+                    st.rerun()
+
         st.markdown("---")
         st.subheader("Plano e Assinatura")
         
@@ -882,60 +1034,162 @@ def render_dashboard():
                 st.write("Dados indisponíveis.")
 
 def login_page():
+    # Hide the default sidebar in the login page for a cleaner look
     st.markdown("""
-    <div style='text-align: center; margin-bottom: 30px;'>
-        <h1 style='font-size: 3rem; color: #4CAF50;'>Dashboard SaaS</h1>
-        <p style='font-size: 1.2rem; color: #bbb;'>Gestão automotiva inteligente</p>
-    </div>
+        <style>
+            [data-testid="collapsedControl"] {display: none;}
+            section[data-testid="stSidebar"] {display: none;}
+        </style>
     """, unsafe_allow_html=True)
+
+    # Cria uma separação visual usando colunas com padding
+    st.markdown("<br><br>", unsafe_allow_html=True)
     
-    col1, col2, col3 = st.columns([1, 2, 1])
+    col_text, col_space, col_form = st.columns([1.2, 0.2, 1])
     
-    with col2:
-        tab1, tab2 = st.tabs(["Entrar", "Criar Conta"])
+    with col_text:
+        st.markdown("""
+        <div style='padding-top: 50px;'>
+            <h1 style='font-size: 4rem; color: #F25C27; font-weight: 900; margin-bottom: 10px;'>Comifyx</h1>
+            <h2 style='font-size: 2.2rem; color: #1E2124; font-weight: 700; line-height: 1.2;'>
+                Plataforma inteligente para gestão de vendas, comissões e performance.
+            </h2>
+            <p style='font-size: 1.3rem; color: #4A5568; margin-top: 20px;'>
+                Controle suas vendas. Escale seus resultados.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    with col_form:
+        st.markdown("""
+        <div style='background-color: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); border: 1px solid #E2E8F0;'>
+        """, unsafe_allow_html=True)
+        
+        tab1, tab2 = st.tabs(["🔒 Acesso Seguro", "👤 Criar Conta"])
         
         with tab1:
-            st.subheader("Login Seguro")
-            email_login = st.text_input("E-mail", key="login_email")
-            senha_login = st.text_input("Senha", type="password", key="login_pass")
-            
-            if st.button("Entrar", type="primary", use_container_width=True):
-                if email_login and senha_login:
-                    with st.spinner("Autenticando..."):
-                        res, err = sign_in(email_login, senha_login)
-                        if err:
-                            st.error(f"Erro ao entrar: {err}")
-                        else:
-                            st.success("Login efetuado com sucesso!")
-                            st.rerun()
-                else:
-                    st.warning("Preencha e-mail e senha.")
+            st.markdown("<br>", unsafe_allow_html=True)
+            with st.form("login_form"):
+                email_login = st.text_input("E-mail corporativo ou pessoal")
+                senha_login = st.text_input("Sua Senha", type="password")
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                submitted = st.form_submit_button("Entrar no Sistema", type="primary", use_container_width=True)
+                if submitted:
+                    if email_login and senha_login:
+                        with st.spinner("Autenticando..."):
+                            res, err = sign_in(email_login, senha_login)
+                            if err:
+                                st.error(f"Erro ao entrar: Verifique suas credenciais.")
+                            else:
+                                st.success("Login efetuado com sucesso!")
+                                st.rerun()
+                    else:
+                        st.warning("Preencha e-mail e senha.")
                     
-            st.markdown("<br><center><p>Ou acesse com</p></center>", unsafe_allow_html=True)
-            st.button("🔑 Entrar com o Google (Em breve)", use_container_width=True, disabled=True)
-            
         with tab2:
-            st.subheader("Nova Conta")
-            nome_cad = st.text_input("Seu Nome/Oficina", key="cad_nome")
-            email_cad = st.text_input("E-mail", key="cad_email")
-            senha_cad = st.text_input("Senha (mín. 6 caracteres)", type="password", key="cad_pass")
+            st.markdown("<br>", unsafe_allow_html=True)
+            with st.form("signup_form"):
+                nome_cad = st.text_input("Nome Completo")
+                email_cad = st.text_input("E-mail Válido")
+                senha_cad = st.text_input("Criar Senha (mín. 6 caracteres)", type="password")
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                submitted_cad = st.form_submit_button("Finalizar Cadastro", type="primary", use_container_width=True)
+                if submitted_cad:
+                    if nome_cad and email_cad and len(senha_cad) >= 6:
+                        with st.spinner("Criando sua conta..."):
+                            res, err = sign_up(email_cad, senha_cad, nome_cad)
+                            if err:
+                                st.error(f"Erro no cadastro: Verifique os dados.")
+                            else:
+                                st.success("Conta criada! Você já pode fazer login na aba 'Acesso Seguro'.")
+                    else:
+                        st.warning("Preencha todos os campos. A senha deve ter no mínimo 6 caracteres.")
+        
+        st.markdown("</div>", unsafe_allow_html=True)
+
+def landing_page():
+    # Hide sidebar
+    st.markdown("""
+        <style>
+            [data-testid="collapsedControl"] {display: none;}
+            section[data-testid="stSidebar"] {display: none;}
             
-            if st.button("Cadastrar", type="primary", use_container_width=True):
-                if nome_cad and email_cad and len(senha_cad) >= 6:
-                    with st.spinner("Criando sua conta..."):
-                        res, err = sign_up(email_cad, senha_cad, nome_cad)
-                        if err:
-                            st.error(f"Erro no cadastro: {err}")
-                        else:
-                            st.success("Conta criada! Você já pode fazer login na aba 'Entrar'.")
-                            st.info("Caso o Supabase exija confirmação, verifique a caixa de entrada do seu e-mail.")
-                else:
-                    st.warning("Preencha todos os campos. Senha deve ter no mínimo 6 caracteres.")
+            /* Landing Page Styles */
+            .lp-logo { font-size: 1.8rem; font-weight: 900; color: #F25C27; padding-top: 10px; }
+            .lp-hero { text-align: center; padding: 4rem 1rem 2rem 1rem; }
+            .lp-hero h1 { font-size: 3.5rem !important; font-weight: 800; color: #1E2124; line-height: 1.2; max-width: 800px; margin: 0 auto; }
+            .lp-hero h1 span { color: #F25C27; }
+            .lp-hero p { font-size: 1.2rem; color: #4A5568; margin-top: 1.5rem; max-width: 600px; margin-left: auto; margin-right: auto; }
+            .lp-cards { display: flex; gap: 1.5rem; justify-content: center; flex-wrap: wrap; margin-top: 3rem; }
+            .lp-card { background: white; border: 1px solid #E2E8F0; border-radius: 12px; padding: 2rem; width: 320px; text-align: left; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+            .lp-card h3 { color: #2D3748; font-size: 1.2rem; margin-bottom: 0.5rem; font-weight: 700; }
+            .lp-card p { color: #718096; font-size: 0.95rem; line-height: 1.5; }
+            .lp-card-icon { background: #FFF3EB; color: #F25C27; width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.5rem; margin-bottom: 1rem; }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    # Header
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        st.markdown("<div class='lp-logo'>Comifyx</div>", unsafe_allow_html=True)
+    with c2:
+        col_empty, col_btn = st.columns([3, 1])
+        with col_btn:
+            if st.button("Entrar", type="primary", use_container_width=True):
+                st.session_state['show_login'] = True
+                st.rerun()
+
+    # Hero
+    st.markdown("""
+        <div class="lp-hero">
+            <h1>Gerencie suas vendas e comissões de forma <span>simples e inteligente</span></h1>
+            <p>Organize seus lançamentos, tenha previsibilidade de ganhos e assuma o controle total sobre sua performance comercial.</p>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    col_btn_center1, col_btn_center2, col_btn_center3 = st.columns([1, 0.3, 1])
+    with col_btn_center2:
+        if st.button("Testar Agora", type="primary", use_container_width=True, key="hero_btn"):
+            st.session_state['show_login'] = True
+            st.rerun()
+
+    # Features
+    st.markdown("<h4 style='text-align: center; color: #F25C27; margin-top: 5rem; letter-spacing: 1.5px; font-weight: 700; font-size: 0.9rem;'>RECURSOS</h4>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: #1E2124; font-size: 2rem !important;'>Tudo o que você precisa para controlar seus resultados</h2>", unsafe_allow_html=True)
+    
+    st.markdown("""
+        <div class="lp-cards">
+            <div class="lp-card">
+                <div class="lp-card-icon">📊</div>
+                <h3>Dashboard Intuitivo</h3>
+                <p>Visualize suas comissões em tempo real com gráficos e indicadores que mostram exatamente quanto você tem a receber.</p>
+            </div>
+            <div class="lp-card">
+                <div class="lp-card-icon">💰</div>
+                <h3>Controle de Receitas</h3>
+                <p>Registre e categorize suas vendas e gastos de forma simples, separando entradas avulsas e despesas diárias.</p>
+            </div>
+            <div class="lp-card">
+                <div class="lp-card-icon">🎯</div>
+                <h3>Previsão e Metas</h3>
+                <p>Acompanhe a projeção do fechamento do seu mês com Inteligência Artificial baseada no seu ritmo de vendas.</p>
+            </div>
+        </div>
+        <br><br><br>
+    """, unsafe_allow_html=True)
 
 def main():
     user = get_current_user()
     if not user:
-        login_page()
+        if st.session_state.get('show_login', False):
+            if st.button("← Voltar para o Site", key="back_btn"):
+                st.session_state['show_login'] = False
+                st.rerun()
+            login_page()
+        else:
+            landing_page()
     else:
         render_dashboard()
 
