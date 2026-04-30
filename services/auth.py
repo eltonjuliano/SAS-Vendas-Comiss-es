@@ -50,7 +50,11 @@ def update_profile_name(new_name):
         supabase.auth.update_user({"data": {"display_name": new_name}})
         
         # Atualiza a tabela pública
-        supabase.table("profiles").update({"display_name": new_name}).eq("id", user.id).execute()
+        supabase.table("profiles").upsert({
+            "id": user.id,
+            "email": user.email,
+            "display_name": new_name
+        }).execute()
         return True
     except Exception as e:
         st.error(f"Erro ao atualizar perfil: {e}")
@@ -83,17 +87,19 @@ def get_user_profile(user_id):
         print(f"Erro ao buscar perfil: {e}")
         return {}
 
-def update_cycle_days(start_day, end_day):
-    """Atualiza os dias de início e fim do ciclo de comissão do usuário."""
+def update_cycle_dates(start_date, end_date):
+    """Atualiza as datas fixas de início e fim do ciclo do usuário."""
     user = get_current_user()
     if not user: return False
     
     try:
-        supabase.table("profiles").update({
-            "cycle_start_day": start_day,
-            "cycle_end_day": end_day
-        }).eq("id", user.id).execute()
+        supabase.table("profiles").upsert({
+            "id": user.id,
+            "email": user.email,
+            "cycle_start_date": str(start_date),
+            "cycle_end_date": str(end_date)
+        }).execute()
         return True
     except Exception as e:
-        st.error(f"Erro ao atualizar ciclo: {e}")
+        st.error(f"Erro ao atualizar datas do ciclo: {e}")
         return False

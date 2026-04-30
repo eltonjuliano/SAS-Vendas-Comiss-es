@@ -2,9 +2,12 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from parser.pdf_parser import extract_pdf_data
-from services.commission import process_sales_dataframe
 from services.database import load_all_sales, save_new_sales, delete_os, load_finance_records, save_finance_record, delete_finance_record, update_finance_record
-from services.auth import sign_up, sign_in, sign_out, get_current_user, update_profile_name, get_user_profile, update_cycle_days
+from services.auth import sign_up, sign_in, sign_out, get_current_user, update_profile_name, get_user_profile, update_cycle_dates
+from services.file_parser import parse_file
+from services.commission_engine import run_commission_engine
+from models.commission_rules import CommissionRule
+from services.supabase_client import supabase
 from services.admin_db import is_admin, get_all_clients, update_subscription_status, create_support_ticket, get_my_tickets, get_all_tickets, answer_ticket, get_global_revenue, request_cancellation, reactivate_account, get_my_subscription
 import uuid
 from services.forecast import generate_forecast
@@ -70,31 +73,53 @@ st.markdown("""
     a.wa-btn:hover {
         background-color: #1EBE55;
     }
+    .table-container {
+        max-height: 400px;
+        overflow-y: auto;
+        overflow-x: auto;
+        border-radius: 8px;
+        border: 1px solid #E2E8F0;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        background-color: #FFFFFF;
+        margin-bottom: 20px;
+    }
+    .table-container::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+    .table-container::-webkit-scrollbar-thumb {
+        background-color: #CBD5E0;
+        border-radius: 4px;
+    }
+    .table-container::-webkit-scrollbar-corner {
+        background-color: transparent;
+    }
     .crm-table {
         width: 100%;
-        border-collapse: separate;
-        border-spacing: 0;
-        font-size: 15px;
+        border-collapse: collapse;
+        font-size: 13.5px;
         font-family: 'Inter', sans-serif;
         background-color: #FFFFFF;
         color: #4A5568;
-        border-radius: 8px;
-        overflow: hidden;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-        border: 1px solid #E2E8F0;
     }
-    .crm-table thead {
+    .crm-table thead th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
         background-color: #F8FAFC;
         color: #1A202C;
         font-weight: 600;
+        border-bottom: 2px solid #E2E8F0;
+        white-space: nowrap;
     }
     .crm-table th, .crm-table td {
-        padding: 14px 16px;
+        padding: 10px 12px;
         text-align: left;
         border-bottom: 1px solid #E2E8F0;
+        white-space: nowrap;
     }
     .crm-table tbody tr:hover {
-        background-color: #F8FAFC;
+        background-color: #F1F5F9;
     }
     /* Buttons */
     .stButton>button {
@@ -280,7 +305,7 @@ def render_dashboard():
         return
 
     # Sidebar Menu Navigation
-    menu_options = ["⏱️ Dashboard", "👥 Clientes (CRM)", "🏎️ Pneus (Michelin)", "💰 Receitas e Despesas", "📁 Importar Vendas (PDF)", "📞 Suporte", "⚙️ Minha Conta"]
+    menu_options = ["⏱️ Dashboard", "👥 Clientes (CRM)", "💰 Receitas e Despesas", "📁 Importar Vendas", "📞 Suporte", "⚙️ Minha Conta"]
     
     _is_adm = is_admin()
     if _is_adm:
@@ -290,21 +315,39 @@ def render_dashboard():
     
     # Mensagens de alerta persistentes pós-reload
     if 'upload_success' in st.session_state:
-        st.sidebar.success(f"✅ {st.session_state.pop('upload_success')} novas OS cadastradas com sucesso!")
+        st.sidebar.success(f"✅ {st.session_state.pop('upload_success')} novas vendas cadastradas com sucesso!")
     if 'upload_duplicates' in st.session_state:
         dups = st.session_state.pop('upload_duplicates')
-        st.sidebar.warning(f"⚠️ Atenção! As seguintes OS JÁ EXISTIAM no sistema e portanto foram ignoradas:\n{', '.join(dups)}")
+        st.sidebar.warning(f"⚠️ Atenção! As seguintes vendas JÁ EXISTIAM no sistema e foram ignoradas:\n{', '.join(dups)}")
     if 'upload_empty' in st.session_state:
-        st.sidebar.warning("⚠️ Nenhuma OS foi lida.")
+        st.sidebar.warning("⚠️ Nenhuma venda foi importada.")
         del st.session_state['upload_empty']
 
+    # Obter dados do perfil do usuário para regras
+    user_profile = get_user_profile(user.id)
+    profile_type = user_profile.get("profile_type", "Auto Center") if user_profile else "Auto Center"
+    commission_rules_data = user_profile.get("commission_rules", []) if user_profile else []
+    
+    # Tour / Aviso para configurar regras se estiverem vazias
+    if not commission_rules_data and selected_tab != "⚙️ Minha Conta":
+        st.warning("👋 **Bem-vindo ao Comifyx!** Notamos que você ainda não configurou suas Regras de Comissão. Vá até a aba **⚙️ Minha Conta** para configurar como suas comissões devem ser calculadas.")
+
     # Puxar TODOS os dados do Banco Histórico
-    with st.spinner("Conectando ao Banco de Dados (Supabase)..."):
+    with st.spinner("Conectando ao Banco de Dados..."):
         db_raw_data = load_all_sales()
         
     df = pd.DataFrame()
     if db_raw_data:
-        df = process_sales_dataframe(db_raw_data)
+        # Se as comissões não vieram do banco (ou precisamos forçar recalculo dinamico):
+        for rec in db_raw_data:
+            if rec.get('total_commission', 0) == 0 and commission_rules_data:
+                # Recalcula
+                rec['total_commission'] = run_commission_engine(rec.get('items', []), commission_rules_data)
+        
+        df = pd.DataFrame(db_raw_data)
+        if not df.empty and 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'], errors='coerce')
+            df['year_month'] = df['date'].dt.to_period('M')
 
     # Trigger Dialogs based on action
     action_param = st.query_params.get("action")
@@ -314,7 +357,9 @@ def render_dashboard():
         # Clear the parameters from the URL immediately so it doesn't get stuck on F5
         st.query_params.clear()
         
-        if action_param == "delete":
+        if action_param == "view":
+            view_os_info(os_target, df)
+        elif action_param == "delete":
             confirm_delete_os(os_target)
         elif action_param == "delfin":
             delete_finance_record(os_target)
@@ -339,52 +384,36 @@ def render_dashboard():
 
     # Puxar dados do ciclo
     user_profile = get_user_profile(user.id)
-    cycle_start = int(user_profile.get("cycle_start_day", 1)) if user_profile else 1
-    cycle_end = int(user_profile.get("cycle_end_day", 31)) if user_profile else 31
-
+    
     from dateutil.relativedelta import relativedelta
     import calendar
     hoje = datetime.now().date()
     
-    def get_cycle_dates(reference_date, start_day, end_day):
-        try:
-            start_date = reference_date.replace(day=start_day)
-        except ValueError:
-            last_day = calendar.monthrange(reference_date.year, reference_date.month)[1]
-            start_date = reference_date.replace(day=min(start_day, last_day))
-            
-        if reference_date < start_date and start_day >= end_day:
-            start_date = start_date - relativedelta(months=1)
-            last_day_prev = calendar.monthrange(start_date.year, start_date.month)[1]
-            start_date = start_date.replace(day=min(start_day, last_day_prev))
-            
-        if start_day < end_day:
-            last_day_curr = calendar.monthrange(start_date.year, start_date.month)[1]
-            end_date = start_date.replace(day=min(end_day, last_day_curr))
-        else:
-            end_date_raw = start_date + relativedelta(months=1)
-            last_day_next = calendar.monthrange(end_date_raw.year, end_date_raw.month)[1]
-            end_date = end_date_raw.replace(day=min(end_day, last_day_next))
-            
-        return start_date, end_date
-
-    c_atual_start, c_atual_end = get_cycle_dates(hoje, cycle_start, cycle_end)
-    c_ant_start, c_ant_end = get_cycle_dates(hoje - relativedelta(months=1), cycle_start, cycle_end)
-    c_ret_start, c_ret_end = get_cycle_dates(hoje - relativedelta(months=2), cycle_start, cycle_end)
+    # Busca datas fixas se existirem, caso contrário define o mês atual
+    primeiro_dia_mes = hoje.replace(day=1)
+    ultimo_dia_mes = hoje.replace(day=calendar.monthrange(hoje.year, hoje.month)[1])
     
+    custom_start_str = user_profile.get("cycle_start_date") if user_profile else None
+    custom_end_str = user_profile.get("cycle_end_date") if user_profile else None
+    
+    try:
+        if custom_start_str and custom_end_str:
+            c_atual_start = pd.to_datetime(custom_start_str).date()
+            c_atual_end = pd.to_datetime(custom_end_str).date()
+        else:
+            c_atual_start = primeiro_dia_mes
+            c_atual_end = ultimo_dia_mes
+    except:
+        c_atual_start = primeiro_dia_mes
+        c_atual_end = ultimo_dia_mes
+
     periodo_opcao = st.sidebar.selectbox("Período de Referência", [
-        "Ciclo Atual",
-        "Ciclo Anterior",
-        "Ciclo Retrasado",
+        "Ciclo Definido no Perfil",
         "Personalizado"
     ])
     
-    if periodo_opcao == "Ciclo Atual":
+    if periodo_opcao == "Ciclo Definido no Perfil":
         default_dates = (c_atual_start, c_atual_end)
-    elif periodo_opcao == "Ciclo Anterior":
-        default_dates = (c_ant_start, c_ant_end)
-    elif periodo_opcao == "Ciclo Retrasado":
-        default_dates = (c_ret_start, c_ret_end)
     else:
         default_dates = (min_date, max_date)
 
@@ -393,10 +422,8 @@ def render_dashboard():
         st.sidebar.info(f"Mostrando de {default_dates[0].strftime('%d/%m/%Y')} a {default_dates[1].strftime('%d/%m/%Y')}")
     else:
         date_range = st.sidebar.date_input(
-            "Selecione as Datas",
-            value=default_dates,
-            min_value=min(min_date, c_ret_start),
-            max_value=max(max_date, c_atual_end)
+            "Selecione as Datas Temporárias (Apenas Visualização)",
+            value=(c_atual_start, c_atual_end)
         )
     
     # Filter DataFrame
@@ -405,10 +432,11 @@ def render_dashboard():
         start_date, end_date = date_range
         start_date = pd.to_datetime(start_date)
         end_date = pd.to_datetime(end_date)
-        filtered_df = filtered_df[
-            (filtered_df['date'] >= start_date) & 
-            (filtered_df['date'] <= end_date)
-        ]
+        if not filtered_df.empty and 'date' in filtered_df.columns:
+            filtered_df = filtered_df[
+                (filtered_df['date'] >= start_date) & 
+                (filtered_df['date'] <= end_date)
+            ]
 
     if filtered_df.empty and selected_tab in ["⏱️ Dashboard", "👥 Clientes (CRM)", "🏎️ Pneus (Michelin)", "💰 Receitas e Despesas"]:
         st.warning("Nenhum dado de vendas encontrado para os filtros selecionados.")
@@ -418,35 +446,67 @@ def render_dashboard():
     if selected_tab == "⏱️ Dashboard":
         if not filtered_df.empty:
             # KPI SECTION
+            if 'total_revenue' not in filtered_df.columns:
+                filtered_df['total_revenue'] = filtered_df.get('total_value', 0.0)
+                
             total_sales = filtered_df['total_revenue'].sum()
-            total_tires = filtered_df['total_tires'].sum()
-            total_services_parts = filtered_df['total_revenue'].sum() - total_tires
             total_commission = filtered_df['total_commission'].sum()
     
             st.subheader("Visão Geral das Vendas")
             
-            st.markdown(f"""
-            <div style="display: flex; gap: 15px; margin-bottom: 25px; flex-wrap: wrap;">
-                <div class="metric-card" style="flex: 1; min-width: 200px;">
-                    <div style="color: #718096; font-size: 0.9rem; margin-bottom: 5px;">Faturamento Total</div>
-                    <div class="metric-value">{format_currency(total_sales)}</div>
-                    <div style="background-color: #E6FFFA; color: #38A169; display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: bold; margin-top: 8px;">↑ Faturamento</div>
+            if profile_type == 'Auto Center':
+                total_tires = filtered_df['total_tires'].sum()
+                total_services_parts = total_sales - total_tires
+                
+                st.markdown(f"""
+                <div style="display: flex; gap: 15px; margin-bottom: 25px; flex-wrap: wrap;">
+                    <div class="metric-card" style="flex: 1; min-width: 200px;">
+                        <div style="color: #718096; font-size: 0.9rem; margin-bottom: 5px;">Faturamento Total</div>
+                        <div class="metric-value">{format_currency(total_sales)}</div>
+                        <div style="background-color: #E6FFFA; color: #38A169; display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: bold; margin-top: 8px;">↑ Faturamento</div>
+                    </div>
+                    <div class="metric-card" style="flex: 1; min-width: 200px;">
+                        <div style="color: #718096; font-size: 0.9rem; margin-bottom: 5px;">Peças e Serviços</div>
+                        <div class="metric-value">{format_currency(total_services_parts)}</div>
+                    </div>
+                    <div class="metric-card" style="flex: 1; min-width: 200px;">
+                        <div style="color: #718096; font-size: 0.9rem; margin-bottom: 5px;">Vendas de Pneus</div>
+                        <div class="metric-value">{format_currency(total_tires)}</div>
+                    </div>
+                    <div class="metric-card" style="flex: 1; min-width: 200px; border-left: 4px solid #F25C27;">
+                        <div style="color: #718096; font-size: 0.9rem; margin-bottom: 5px; font-weight: 600;">Sua Comissão</div>
+                        <div class="metric-value" style="color: #F25C27;">{format_currency(total_commission)}</div>
+                        <div style="background-color: #FFF3EB; color: #DD6B20; display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: bold; margin-top: 8px;">★ A Receber</div>
+                    </div>
                 </div>
-                <div class="metric-card" style="flex: 1; min-width: 200px;">
-                    <div style="color: #718096; font-size: 0.9rem; margin-bottom: 5px;">Peças e Serviços</div>
-                    <div class="metric-value">{format_currency(total_services_parts)}</div>
+                """, unsafe_allow_html=True)
+            else:
+                # Perfil Genérico
+                qtd_vendas = len(filtered_df)
+                ticket_medio = total_sales / qtd_vendas if qtd_vendas > 0 else 0
+                
+                st.markdown(f"""
+                <div style="display: flex; gap: 15px; margin-bottom: 25px; flex-wrap: wrap;">
+                    <div class="metric-card" style="flex: 1; min-width: 200px;">
+                        <div style="color: #718096; font-size: 0.9rem; margin-bottom: 5px;">Volume de Vendas (R$)</div>
+                        <div class="metric-value">{format_currency(total_sales)}</div>
+                        <div style="background-color: #E6FFFA; color: #38A169; display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: bold; margin-top: 8px;">↑ Receita Global</div>
+                    </div>
+                    <div class="metric-card" style="flex: 1; min-width: 200px;">
+                        <div style="color: #718096; font-size: 0.9rem; margin-bottom: 5px;">Qtd. de Vendas</div>
+                        <div class="metric-value">{qtd_vendas}</div>
+                    </div>
+                    <div class="metric-card" style="flex: 1; min-width: 200px;">
+                        <div style="color: #718096; font-size: 0.9rem; margin-bottom: 5px;">Ticket Médio</div>
+                        <div class="metric-value">{format_currency(ticket_medio)}</div>
+                    </div>
+                    <div class="metric-card" style="flex: 1; min-width: 200px; border-left: 4px solid #F25C27;">
+                        <div style="color: #718096; font-size: 0.9rem; margin-bottom: 5px; font-weight: 600;">Sua Comissão Estimada</div>
+                        <div class="metric-value" style="color: #F25C27;">{format_currency(total_commission)}</div>
+                        <div style="background-color: #FFF3EB; color: #DD6B20; display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: bold; margin-top: 8px;">★ A Receber</div>
+                    </div>
                 </div>
-                <div class="metric-card" style="flex: 1; min-width: 200px;">
-                    <div style="color: #718096; font-size: 0.9rem; margin-bottom: 5px;">Vendas de Pneus</div>
-                    <div class="metric-value">{format_currency(total_tires)}</div>
-                </div>
-                <div class="metric-card" style="flex: 1; min-width: 200px; border-left: 4px solid #F25C27;">
-                    <div style="color: #718096; font-size: 0.9rem; margin-bottom: 5px; font-weight: 600;">Sua Comissão</div>
-                    <div class="metric-value" style="color: #F25C27;">{format_currency(total_commission)}</div>
-                    <div style="background-color: #FFF3EB; color: #DD6B20; display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: bold; margin-top: 8px;">★ A Receber</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
     
             # CHARTS SECTION
             st.subheader("📈 Análise Gráfica e Operacional")
@@ -465,14 +525,20 @@ def render_dashboard():
                 with tb2:
                     st.plotly_chart(plot_commissions_evolution(daily_sales), use_container_width=True)
             with c2:
-                st.plotly_chart(plot_category_comparison(total_tires, total_services_parts), use_container_width=True)
+                if profile_type == 'Auto Center':
+                    st.plotly_chart(plot_category_comparison(total_tires, total_services_parts), use_container_width=True)
+                else:
+                    st.info("Distribuição de vendas em breve.")
                 
             # Row 2: Flow and Vehicles
             c3, c4 = st.columns(2)
             with c3:
                 st.plotly_chart(plot_time_analysis(filtered_df), use_container_width=True)
             with c4:
-                st.plotly_chart(plot_vehicle_frequency(filtered_df), use_container_width=True)
+                if profile_type == 'Auto Center':
+                    st.plotly_chart(plot_vehicle_frequency(filtered_df), use_container_width=True)
+                else:
+                    st.info("Frequência de clientes em breve.")
     
             st.markdown("---")
     
@@ -508,44 +574,54 @@ def render_dashboard():
         st.markdown("---")
 
         # TABLE SECTION (Anonymized)
-        st.subheader("📋 Histórico Anonimizado de OS")
+        st.subheader("📋 Histórico de Vendas")
         
-        # Determine explicit separated parts/services
-        display_df = filtered_df[[
-            'os_number', 'date', 'vehicle_model', 'vehicle_year', 
-            'total_parts', 'total_services', 'total_tires', 'total_revenue'
-        ]].copy()
-        
-        # Deduct tires from total_parts for the explicit display
-        display_df['total_parts'] = display_df['total_parts'] - display_df['total_tires']
-        
-        # Format Currency
-        for col in ['total_parts', 'total_services', 'total_tires', 'total_revenue']:
-            display_df[col] = display_df[col].apply(lambda x: format_currency(x))
-            
-        # Ensure date format has no time
-        display_df['date'] = display_df['date'].apply(lambda x: x.strftime('%d/%m/%Y'))
-        
-        # Injetar links de ação em HTML (Os Ícones de Consultar e Excluir)
-        display_df.insert(0, 'Ações', display_df['os_number'].apply(
-            lambda os: f'<a href="/?action=view&os={os}" target="_self" style="text-decoration:none; font-size:16px; margin-right:12px;" title="Consultar OS">🔍</a>'
-                       f'<a href="/?action=delete&os={os}" target="_self" style="text-decoration:none; font-size:16px;" title="Excluir OS">🗑️</a>'
-        ))
-        
-        display_df.rename(columns={
-            'os_number': 'OS Nº',
-            'date': 'Data',
-            'vehicle_model': 'Modelo',
-            'vehicle_year': 'Ano',
-            'total_parts': 'Peças (s/ pneu)',
-            'total_services': 'Serviços',
-            'total_tires': 'Pneus',
-            'total_revenue': 'Total'
-        }, inplace=True)
+        if not filtered_df.empty:
+            if profile_type == 'Auto Center':
+                display_df = filtered_df[[
+                    'os_number', 'date', 'vehicle_model', 'vehicle_year', 
+                    'total_parts', 'total_services', 'total_tires', 'total_revenue'
+                ]].copy()
+                
+                display_df['total_parts'] = display_df['total_parts'] - display_df['total_tires']
+                for col in ['total_parts', 'total_services', 'total_tires', 'total_revenue']:
+                    display_df[col] = display_df[col].apply(lambda x: format_currency(x))
+                    
+                display_df['date'] = display_df['date'].apply(lambda x: x.strftime('%d/%m/%Y'))
+                display_df.insert(0, 'Ações', display_df['os_number'].apply(
+                    lambda os: f'<a href="/?action=view&os={os}" target="_self" style="text-decoration:none; font-size:16px; margin-right:12px;" title="Consultar OS">🔍</a>'
+                               f'<a href="/?action=delete&os={os}" target="_self" style="text-decoration:none; font-size:16px;" title="Excluir OS">🗑️</a>'
+                ))
+                
+                display_df.rename(columns={
+                    'os_number': 'OS Nº', 'date': 'Data', 'vehicle_model': 'Modelo', 
+                    'vehicle_year': 'Ano', 'total_parts': 'Peças (s/ pneu)', 
+                    'total_services': 'Serviços', 'total_tires': 'Pneus', 'total_revenue': 'Total'
+                }, inplace=True)
+            else:
+                display_df = filtered_df[[
+                    'identifier', 'date', 'client', 'total_revenue', 'total_commission'
+                ]].copy()
+                
+                for col in ['total_revenue', 'total_commission']:
+                    display_df[col] = display_df[col].apply(lambda x: format_currency(x))
+                    
+                display_df['date'] = display_df['date'].apply(lambda x: x.strftime('%d/%m/%Y') if pd.notnull(x) else '')
+                display_df.insert(0, 'Ações', display_df['identifier'].apply(
+                    lambda os: f'<a href="/?action=delete&os={os}" target="_self" style="text-decoration:none; font-size:16px;" title="Excluir">🗑️</a>'
+                ))
+                
+                display_df.rename(columns={
+                    'identifier': 'Identificador', 'date': 'Data', 'client': 'Cliente', 
+                    'total_revenue': 'Total da Venda', 'total_commission': 'Comissão Calculada'
+                }, inplace=True)
 
-        # Usar tabela HTML para suportar ícones e links clicáveis de forma nativa e rápida
-        html_table = display_df.to_html(escape=False, index=False, classes="crm-table", border=0)
-        st.write(html_table, unsafe_allow_html=True)
+            # Usar tabela HTML
+            html_table = display_df.to_html(escape=False, index=False, classes="crm-table", border=0)
+            wrapped_table = f'<div class="table-container">{html_table}</div>'
+            st.write(wrapped_table, unsafe_allow_html=True)
+        else:
+            st.info("Nenhuma venda no período filtrado.")
 
 
     # ========================= CRM DE CLIENTES =========================
@@ -640,7 +716,7 @@ def render_dashboard():
             
             # Show Table with HTML safely to render buttons and styles
             html_table = crm_table.to_html(escape=False, index=False, classes="crm-table", border=0)
-            st.write(html_table, unsafe_allow_html=True)
+            st.write(f'<div class="table-container">{html_table}</div>', unsafe_allow_html=True)
             
     # ========================= BÔNUS MICHELIN =========================
     elif selected_tab == "🏎️ Pneus (Michelin)":
@@ -777,9 +853,12 @@ def render_dashboard():
                 df_show['data'] = df_show['data'].apply(lambda x: x.strftime('%d/%m/%Y'))
                 df_show['valor'] = df_show['valor'].apply(lambda x: format_currency(x))
                 
-                # Dividir df
-                df_gastos = df_show[df_show['tipo'] == 'Gasto'].drop(columns=['id', 'tipo'])
-                df_receb = df_show[df_show['tipo'] == 'Recebível'].drop(columns=['id', 'tipo'])
+                # Dividir df (mantendo apenas colunas relevantes)
+                cols_to_keep = ['Ações', 'data', 'categoria', 'descricao', 'valor']
+                cols_to_keep = [c for c in cols_to_keep if c in df_show.columns]
+                
+                df_gastos = df_show[df_show['tipo'] == 'Gasto'][cols_to_keep]
+                df_receb = df_show[df_show['tipo'] == 'Recebível'][cols_to_keep]
                 
                 df_gastos.rename(columns={'data': 'Data', 'categoria': 'Categoria', 'descricao': 'Descrição', 'valor': 'Valor'}, inplace=True)
                 df_receb.rename(columns={'data': 'Data', 'categoria': 'Categoria', 'descricao': 'Descrição', 'valor': 'Valor'}, inplace=True)
@@ -790,7 +869,7 @@ def render_dashboard():
                     st.markdown("#### Despesas (Gastos)")
                     if not df_gastos.empty:
                         html_g = df_gastos.to_html(escape=False, index=False, classes="crm-table", border=0)
-                        st.write(html_g, unsafe_allow_html=True)
+                        st.write(f'<div class="table-container">{html_g}</div>', unsafe_allow_html=True)
                     else:
                         st.caption("Sem despesas no período.")
                         
@@ -798,7 +877,7 @@ def render_dashboard():
                     st.markdown("#### Receitas (Adicionais)")
                     if not df_receb.empty:
                         html_r = df_receb.to_html(escape=False, index=False, classes="crm-table", border=0)
-                        st.write(html_r, unsafe_allow_html=True)
+                        st.write(f'<div class="table-container">{html_r}</div>', unsafe_allow_html=True)
                     else:
                         st.caption("Sem receitas avulsas no período.")
             else:
@@ -807,38 +886,91 @@ def render_dashboard():
             st.info("Você ainda não possui lançamentos financeiros.")
             st.write(f"Sua previsão com base apenas em Vendas de OS nesse período: **{format_currency(total_commission)}**")
 
-    # ========================= IMPORTAR VENDAS (PDF) =========================
-    elif selected_tab == "📁 Importar Vendas (PDF)":
-        st.subheader("📁 Importar Vendas (PDF)")
-        st.write("Faça upload dos PDFs gerados pelo seu sistema para importar novas vendas e ordens de serviço.")
+    # ========================= IMPORTAR VENDAS =========================
+    elif selected_tab == "📁 Importar Vendas":
+        st.subheader("📁 Importar Vendas")
+        st.write("Faça upload de arquivos (PDF, CSV, Excel) ou insira manualmente suas vendas.")
         
-        uploaded_files = st.file_uploader(
-            "Selecione um ou mais PDFs", 
-            type="pdf", 
-            accept_multiple_files=True
-        )
-        if st.button("Processar Ordens de Serviço", type="primary", use_container_width=True) and uploaded_files:
-            with st.spinner("Lendo PDFs e calculando comissões..."):
-                raw_data_list = []
-                for file_obj in uploaded_files:
-                    try:
-                        data = extract_pdf_data(file_obj)
-                        raw_data_list.append(data)
-                    except Exception as e:
-                        st.error(f"Erro ao processar {file_obj.name}: {e}")
+        tab_upload, tab_manual = st.tabs(["📤 Upload de Arquivos", "✍️ Entrada Manual (Fallback)"])
+        
+        with tab_upload:
+            uploaded_files = st.file_uploader(
+                "Selecione um ou mais arquivos", 
+                type=["pdf", "csv", "xlsx", "xls"], 
+                accept_multiple_files=True
+            )
+            
+            if st.button("Processar Arquivos", type="primary", use_container_width=True) and uploaded_files:
+                with st.spinner("Lendo arquivos e extraindo dados..."):
+                    raw_data_list = []
+                    erros = []
+                    
+                    for file_obj in uploaded_files:
+                        resultado = parse_file(file_obj, profile_type)
+                        if resultado['success']:
+                            raw_data_list.extend(resultado['data'])
+                        else:
+                            erros.append(f"{file_obj.name}: {resultado['message']}")
+                    
+                    if erros:
+                        st.error("Alguns arquivos falharam na leitura. Você pode inserir os dados deles manualmente na aba ao lado.")
+                        for erro in erros:
+                            st.write(f"- {erro}")
+                            
+                    if raw_data_list:
+                        inserted, duplicates = save_new_sales(raw_data_list)
+                        if inserted > 0:
+                            st.session_state['upload_success'] = inserted
+                        if duplicates:
+                            st.session_state['upload_duplicates'] = duplicates
+                        
+                        st.rerun()
+                    elif not erros:
+                        st.warning("Nenhum dado válido encontrado para importar.")
+                        
+        with tab_manual:
+            st.write("Insira os dados da venda manualmente caso o upload automático falhe.")
+            with st.form("manual_entry_form"):
+                m_ident = st.text_input("Identificador da Venda (Ex: Número da OS, ID do Pedido)")
+                m_data = st.date_input("Data da Venda")
+                m_client = st.text_input("Cliente (Opcional)")
+                m_valor = st.number_input("Valor Total (R$)", min_value=0.0, step=10.0, format="%.2f")
                 
-                # Save to database
-                inserted, duplicates = save_new_sales(raw_data_list)
-                if inserted > 0:
-                    st.session_state['upload_success'] = inserted
-                
-                if duplicates:
-                    st.session_state['upload_duplicates'] = duplicates
-                elif inserted == 0 and not duplicates:
-                    st.session_state['upload_empty'] = True
-                
-                # Refresh to fetch from db
-                st.rerun()
+                # Se for auto center, tenta simular
+                if profile_type == 'Auto Center':
+                    st.write("Detalhamento (Opcional):")
+                    c1, c2, c3 = st.columns(3)
+                    with c1: m_parts = st.number_input("Peças (R$)", min_value=0.0, step=10.0)
+                    with c2: m_serv = st.number_input("Serviços (R$)", min_value=0.0, step=10.0)
+                    with c3: m_tires = st.number_input("Pneus (R$)", min_value=0.0, step=10.0)
+                else:
+                    m_parts = m_serv = m_tires = 0.0
+                    
+                if st.form_submit_button("Salvar Venda", type="primary"):
+                    if m_ident and m_valor >= 0:
+                        items = []
+                        if profile_type == 'Auto Center' and (m_parts > 0 or m_serv > 0 or m_tires > 0):
+                            items.append({'name': 'Peças', 'value': max(0.0, m_parts), 'type': 'parts'})
+                            items.append({'name': 'Serviços', 'value': max(0.0, m_serv), 'type': 'services'})
+                            items.append({'name': 'Pneus', 'value': max(0.0, m_tires), 'type': 'tires'})
+                        else:
+                            items.append({'name': 'Geral', 'value': m_valor, 'type': 'general'})
+                            
+                        record = [{
+                            'identifier': m_ident,
+                            'date': m_data,
+                            'client': m_client,
+                            'total_value': m_valor,
+                            'items': items,
+                            'metadata': {}
+                        }]
+                        ins, dup = save_new_sales(record)
+                        if ins > 0:
+                            st.success("Venda inserida com sucesso!")
+                        elif dup:
+                            st.error("Este Identificador já existe no sistema.")
+                    else:
+                        st.warning("Preencha o Identificador.")
 
     # ========================= SUPORTE (CLIENTE) =========================
     elif selected_tab == "📞 Suporte":
@@ -886,22 +1018,134 @@ def render_dashboard():
                     st.rerun()
                     
         st.markdown("---")
-        with st.expander("🔄 Configurar Ciclo de Faturamento", expanded=True):
-            st.write("Defina o período padrão para o cálculo das suas comissões e faturamento.")
-            user_profile = get_user_profile(user.id)
-            current_start = user_profile.get("cycle_start_day", 1) if user_profile else 1
-            current_end = user_profile.get("cycle_end_day", 31) if user_profile else 31
+        with st.expander("🔄 Configurar Ciclo de Faturamento Fixo", expanded=True):
+            st.write("Defina as **datas exatas** para o cálculo das suas comissões atuais. Estas datas ficarão salvas e serão o padrão do seu Dashboard até você alterá-las.")
+            
+            hoje = datetime.now().date()
+            import calendar
+            primeiro_dia_mes = hoje.replace(day=1)
+            ultimo_dia_mes = hoje.replace(day=calendar.monthrange(hoje.year, hoje.month)[1])
+            
+            custom_start_str = user_profile.get("cycle_start_date") if user_profile else None
+            custom_end_str = user_profile.get("cycle_end_date") if user_profile else None
+            
+            try:
+                if custom_start_str and custom_end_str:
+                    c_start = pd.to_datetime(custom_start_str).date()
+                    c_end = pd.to_datetime(custom_end_str).date()
+                else:
+                    c_start = primeiro_dia_mes
+                    c_end = ultimo_dia_mes
+            except:
+                c_start = primeiro_dia_mes
+                c_end = ultimo_dia_mes
             
             c1, c2 = st.columns(2)
             with c1:
-                new_start = st.number_input("Dia de Início", min_value=1, max_value=31, value=int(current_start))
+                new_start = st.date_input("Data de Início", value=c_start)
             with c2:
-                new_end = st.number_input("Dia de Fechamento", min_value=1, max_value=31, value=int(current_end))
+                new_end = st.date_input("Data de Fechamento", value=c_end)
                 
-            if st.button("Salvar Ciclo"):
-                if update_cycle_days(new_start, new_end):
-                    st.success("Ciclo atualizado com sucesso!")
+            if st.button("Salvar Período", type="primary", key="btn_salvar_periodo"):
+                if update_cycle_dates(new_start, new_end):
+                    st.success("Período fixo atualizado com sucesso! Atualizando tela...")
+                    import time
+                    time.sleep(1.5)
                     st.rerun()
+
+        st.markdown("---")
+        with st.expander("🏢 Perfil Comercial e Comissões", expanded=True):
+            st.write("Adapte o sistema para o seu modelo de negócio e defina como você ganha comissão.")
+            
+            perfis_disponiveis = ["Auto Center", "Varejo", "Imóveis", "Veículos", "Consórcios", "Outro"]
+            idx_perfil = perfis_disponiveis.index(profile_type) if profile_type in perfis_disponiveis else 0
+            
+            novo_perfil = st.selectbox("Seu Segmento de Atuação", perfis_disponiveis, index=idx_perfil)
+            
+            st.markdown("#### Tabela de Comissões")
+            st.write("Adicione os produtos/serviços que você vende e a porcentagem de comissão correspondente para cada um.")
+            
+            regras_atuais = user_profile.get("commission_rules", []) if user_profile else []
+            
+            # Prepara dados para a tabela
+            tabela_dados = []
+            for r in regras_atuais:
+                tabela_dados.append({
+                    "Produto": r.get("item_type", ""),
+                    "Comissão (%)": float(r.get("value", 0.0))
+                })
+                
+            # Valores padrão se estiver vazio
+            if not tabela_dados:
+                if profile_type == 'Auto Center':
+                    tabela_dados = [
+                        {"Produto": "Peças", "Comissão (%)": 2.0},
+                        {"Produto": "Serviços", "Comissão (%)": 2.0},
+                        {"Produto": "Pneus", "Comissão (%)": 1.0}
+                    ]
+                else:
+                    tabela_dados = [
+                        {"Produto": "Geral", "Comissão (%)": 5.0},
+                        {"Produto": "", "Comissão (%)": 0.0}
+                    ]
+            
+            df_regras = pd.DataFrame(tabela_dados)
+            
+            edited_df = st.data_editor(
+                df_regras,
+                num_rows="dynamic",
+                column_config={
+                    "Produto": st.column_config.TextColumn(
+                        "Produto ou Serviço (Ex: Pneus, Calça, etc)", 
+                        required=True,
+                        width="large"
+                    ),
+                    "Comissão (%)": st.column_config.NumberColumn(
+                        "Comissão (%)", 
+                        min_value=0.0, 
+                        max_value=100.0, 
+                        step=0.1, 
+                        format="%.1f %%",
+                        width="medium"
+                    )
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            if st.button("Salvar Perfil e Regras", type="primary"):
+                try:
+                    import uuid
+                    novas_regras = []
+                    for _, row in edited_df.iterrows():
+                        prod = str(row["Produto"]).strip()
+                        try:
+                            val = float(row["Comissão (%)"])
+                        except:
+                            val = 0.0
+                            
+                        if prod: # Ignora linhas onde o produto ficou em branco
+                            novas_regras.append({
+                                "id": str(uuid.uuid4()),
+                                "item_type": prod,
+                                "rule_type": "percentage",
+                                "value": val
+                            })
+                            
+                    # Atualiza ou cria no Supabase
+                    supabase.table("profiles").upsert({
+                        "id": user.id,
+                        "email": user.email,
+                        "profile_type": novo_perfil,
+                        "commission_rules": novas_regras
+                    }).execute()
+                    
+                    st.success("Perfil e regras atualizados com sucesso!")
+                    import time
+                    time.sleep(1.5)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao salvar: {e}")
 
         st.markdown("---")
         st.subheader("Plano e Assinatura")
