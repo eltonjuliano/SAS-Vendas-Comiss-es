@@ -623,6 +623,51 @@ def render_dashboard():
         else:
             st.info("Nenhuma venda no período filtrado.")
 
+        # ========================= BÔNUS MICHELIN =========================
+        if profile_type == 'Auto Center':
+            st.markdown("---")
+            st.subheader("🛞 Relatório de Vendas: MICHELIN")
+            st.write("Acompanhe o faturamento exclusivo de pneus da marca Michelin para repasses de bônus.")
+            
+            # Filter only OSs that sold Michelin tires
+            if 'total_michelin' in filtered_df.columns:
+                michelin_df = filtered_df[filtered_df['total_michelin'] > 0].copy()
+                
+                # KPIs
+                total_michelin_revenue = michelin_df['total_michelin'].sum()
+                total_michelin_qty = michelin_df['michelin_quantity'].sum()
+                
+                mk_1, mk_2 = st.columns(2)
+                with mk_1:
+                    st.metric("Total em R$ Michelin", format_currency(total_michelin_revenue))
+                with mk_2:
+                    st.metric("Quant. Pneus Michelin Vendidos", int(total_michelin_qty))
+                    
+                st.markdown("---")
+                
+                if not michelin_df.empty:
+                    st.write("### 📋 Histórico de OSs com Pneus Michelin")
+                    
+                    # Format view
+                    mich_display = michelin_df[['os_number', 'date', 'customer', 'michelin_quantity', 'total_michelin']].copy()
+                    mich_display['date'] = mich_display['date'].apply(lambda x: x.strftime('%d/%m/%Y'))
+                    mich_display['total_michelin'] = mich_display['total_michelin'].apply(lambda x: format_currency(x))
+                    mich_display.rename(columns={
+                        'os_number': 'OS Nº',
+                        'date': 'Data',
+                        'customer': 'Cliente',
+                        'michelin_quantity': 'Qtd. Michelin',
+                        'total_michelin': 'Faturamento Michelin'
+                    }, inplace=True)
+                    
+                    mich_html_table = mich_display.to_html(escape=False, index=False, classes="crm-table", border=0)
+                    mich_wrapped_table = f'<div class="table-container">{mich_html_table}</div>'
+                    st.write(mich_wrapped_table, unsafe_allow_html=True)
+                else:
+                    st.info("Nenhuma venda de Pneu Michelin encontrada no período filtrado.")
+            else:
+                st.info("Atualize o banco de dados enviando novos relatórios para visualizar os dados Michelin.")
+
 
     # ========================= CRM DE CLIENTES =========================
     elif selected_tab == "👥 Clientes (CRM)":
@@ -717,48 +762,6 @@ def render_dashboard():
             # Show Table with HTML safely to render buttons and styles
             html_table = crm_table.to_html(escape=False, index=False, classes="crm-table", border=0)
             st.write(f'<div class="table-container">{html_table}</div>', unsafe_allow_html=True)
-            
-    # ========================= BÔNUS MICHELIN =========================
-    elif selected_tab == "🏎️ Pneus (Michelin)":
-        st.subheader("🛞 Relatório de Vendas: MICHELIN")
-        st.write("Acompanhe o faturamento exclusivo de pneus da marca Michelin para repasses de bônus.")
-        
-        # Filter only OSs that sold Michelin tires
-        if 'total_michelin' in filtered_df.columns:
-            michelin_df = filtered_df[filtered_df['total_michelin'] > 0].copy()
-            
-            # KPIs
-            total_michelin_revenue = michelin_df['total_michelin'].sum()
-            total_michelin_qty = michelin_df['michelin_quantity'].sum()
-            
-            mk_1, mk_2 = st.columns(2)
-            with mk_1:
-                st.metric("Total em R$ Michelin", format_currency(total_michelin_revenue))
-            with mk_2:
-                st.metric("Quant. Pneus Michelin Vendidos", int(total_michelin_qty))
-                
-            st.markdown("---")
-            
-            if not michelin_df.empty:
-                st.write("### 📋 Histórico de OSs com Pneus Michelin")
-                
-                # Format view
-                mich_display = michelin_df[['os_number', 'date', 'customer', 'michelin_quantity', 'total_michelin']].copy()
-                mich_display['date'] = mich_display['date'].apply(lambda x: x.strftime('%d/%m/%Y'))
-                mich_display['total_michelin'] = mich_display['total_michelin'].apply(lambda x: format_currency(x))
-                mich_display.rename(columns={
-                    'os_number': 'OS Nº',
-                    'date': 'Data',
-                    'customer': 'Cliente',
-                    'michelin_quantity': 'Qtd. Michelin',
-                    'total_michelin': 'Faturamento Michelin'
-                }, inplace=True)
-                
-                st.dataframe(mich_display, use_container_width=True, hide_index=True)
-            else:
-                st.info("Nenhuma venda de Pneu Michelin encontrada no período filtrado.")
-        else:
-            st.info("Atualize o banco de dados enviando novos relatórios para visualizar os dados Michelin.")
             
 
     # ========================= GESTÃO DE RECEBÍVEIS E DESPESAS =========================
